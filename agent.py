@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
-from model_pn import Actor, Critic, Critic_2
+from model_pn import Actor, Critic, Critic_2,Critic_feature,Critic_2_feature
 from replay_buffer import ReplayBuffer
 
 from scipy import *
@@ -25,7 +25,9 @@ class Agent:
         # self.device = 'cpu'
         self.writer = self.args.writer
         self.policy_net = Actor(self.args).to(self.device)
+        self.critic_net_feature = Critic_feature(self.args).to(self.device)
         self.critic_net = Critic(self.args).to(self.device)
+        self.critic_net_2_feature = Critic_2_feature(self.args).to(self.device)
         self.critic_net_2 = Critic_2(self.args).to(self.device)
         # 定义两个active网络学习率的decay系数
         self.learning_rate_policy_net = self.args.actor_lr
@@ -47,7 +49,7 @@ class Agent:
         self.update_value_net_count = 0
         self.update_value_net_2_count = 0
         self.update_policy_net_count = 0
-
+        self.distance = []
         self.weight_vector = [1,0]
         np.save('./Exp/new_init_weight',self.weight_vector)
 
@@ -64,11 +66,12 @@ class Agent:
         for i in range(1):
             self.update_value_net_count += 1
             self.optimizer_critic.zero_grad()
-            feature_f = self.critic_net_2(channel_matrix, user_reward)[1].detach()
-            approximate_value = self.critic_net(channel_matrix, user_reward,feature_f)[0]
+            feature_f = self.critic_net_2_feature(channel_matrix, user_reward).detach()
+            feature_c = self.critic_net_feature(channel_matrix, user_reward)
+            approximate_value = self.critic_net(feature_c,feature_f)
             loss = self.loss_function(approximate_value, target_value)
             loss.backward()
-            params_e = list(self.critic_net.parameters())
+            params_e = list(self.critic_net.parameters())+list(self.critic_net_feature.parameters())
             grad_c = [p.grad.data.cpu().numpy() for p in params_e]
             self.optimizer_critic.step()
             self.writer.add_scalar('Loss/new_critic_loss', loss.item(), self.update_value_net_count)
@@ -79,10 +82,12 @@ class Agent:
         for i in range(1):
             self.update_value_net_2_count += 1
             self.optimizer_critic_2.zero_grad()
-            approximate_value = self.critic_net_2(channel_matrix, user_fairness_reward)[0]
+            feature_c = self.critic_net_feature(channel_matrix, user_fairness_reward).detach()
+            feature_f = self.critic_net_2_feature(channel_matrix, user_fairness_reward)
+            approximate_value = self.critic_net_2(feature_f, feature_c)
             loss = self.loss_function(approximate_value, target_value)
             loss.backward()
-            params_f = list(self.critic_net_2.parameters())
+            params_f = list(self.critic_net_2.parameters()) + list(self.critic_net_2_feature.parameters())
             grad_f = [p.grad.data.cpu().numpy() for p in params_f]
             self.optimizer_critic_2.step()
             self.writer.add_scalar('Loss/new_critic_loss', loss.item(), self.update_value_net_2_count)
@@ -107,15 +112,18 @@ class Agent:
         Prob = torch.stack([torch.stack(probs[i], 0) for i in range(self.args.episodes)], 0).reshape(-1)
         noise = torch.FloatTensor(noise).to(self.device).squeeze()
 
+        feature_c = self.critic_net_feature(channel_matrix, user_fairness_reward).detach()
+        feature_c = feature_c.to(self.device)
+        feature_f = self.critic_net_2_feature(channel_matrix, user_fairness_reward).detach()
+        feature_f = feature_f.to(self.device)
 
-        values_f, feature_f = self.critic_net_2(channel_matrix, user_fairness_reward)
-        values_f = values_f.detach()
-        feature_f = feature_f.detach()
+        values_f = self.critic_net_2(feature_f, feature_c).detach()
         returns_f = torch.zeros(channel_matrix.shape[0],1).to(self.device)
         deltas_f = torch.Tensor(channel_matrix.shape[0],1).to(self.device)
         advantages_f = torch.Tensor(channel_matrix.shape[0],1).to(self.device)
 
-        values_c = self.critic_net(channel_matrix, user_fairness_reward,feature_f)[0].detach()  # critic
+
+        values_c = self.critic_net(feature_c,feature_f).detach()  # critic
         returns_c = torch.zeros(channel_matrix.shape[0], 1).to(self.device)  # target
         deltas_c = torch.Tensor(channel_matrix.shape[0], 1).to(self.device)  # target - critic
         advantages_c = torch.Tensor(channel_matrix.shape[0], 1).to(self.device)
@@ -152,27 +160,45 @@ class Agent:
 
         advantages_c = (advantages_c - torch.mean(advantages_c)) / torch.std(advantages_c)
         advantages_f = (advantages_f - torch.mean(advantages_f)) / torch.std(advantages_f)
-        def func(weight_vector = [0.5,0.5]):
-            s = 0
-            for i in range(len(grad_f)):
-                s += np.sum(np.square(grad_c[i]*weight_vector[0]+grad_f[i]*weight_vector[1]))
-            return s
- 
-        # cons = ({'type': 'eq','fun': lambda x: x[0] + x[1] - 1 },
-        #             {'type': 'ineq', 'fun': lambda x: x[0] - 0},{'type': 'ineq', 'fun': lambda x: x[1] - 0})
-        # res = minimize(func, self.weight_vector, constraints=cons, method='SLSQP', options={'disp': True})
-        # self.weight_vector = res.x
+        # 设置一个阈值，用来判断advantage的差距是否过大
+        advantage_threshold = 6.6757e-08  # 根据实际情况调整
+        # 计算两个目标的advantage差距
+        advantage_diff = torch.abs(torch.mean(advantages_c) - torch.mean(advantages_f))
+        self.distance.append(float(advantage_diff))
+        # 判断是否需要进行梯度扰动
+        print(advantage_diff)
+        if advantage_diff > advantage_threshold:
+            perturbation_enabled = True
+        else:
+            perturbation_enabled = False
+        perturbation_factor = 0.3  # 梯度扰动因子
+
+        # 当两个目标的advantage差距过大时，进行梯度扰动
+        if perturbation_enabled:
+            if torch.mean(advantages_c) > torch.mean(advantages_f):
+                # 如果容量回报的advantage较大，增加公平性回报的权重
+                weight_c = 1 - perturbation_factor
+                weight_f = 1 + perturbation_factor
+            else:
+                # 如果公平性回报的advantage较大，增加容量回报的权重
+                weight_c = 1 + perturbation_factor
+                weight_f = 1 - perturbation_factor
+        else:
+            # 正常情况下，保持权重平衡
+            weight_c = 1.0
+            weight_f = 1.0
+
+        # 应用调整后的权重
+        advantages_c_perturbed = weight_c * advantages_c
+        advantages_f_perturbed = weight_f * advantages_f
         w1 = self.weight_vector[0]
         w2 = self.weight_vector[1]
         self.update_policy_net_count += 1
         advantages=torch.cat((advantages_c,advantages_f),1)
         policy_net_loss = - torch.mean(Prob* (torch.sum(torch.multiply(advantages,noise[0]),1)))
-        # advantages = w1*advantages_c + w2*advantages_f
-        # policy_net_loss = - torch.mean(Prob * advantages.squeeze())
         self.optimizer_policy.zero_grad()
         policy_net_loss.backward()
         self.optimizer_policy.step()
-        # self.writer.add_scalar('Loss/actor_loss', torch.mean(torch.exp(Prob) * advantages.squeeze()), self.update_policy_net_count)
         self.learning_rate_critic_net = (1-self.decay_rate_critic_net) * self.learning_rate_critic_net
         self.learning_rate_policy_net = (1-self.decay_rate_policy_net) * self.learning_rate_policy_net
         self.replay_buffer.reset_buffer()

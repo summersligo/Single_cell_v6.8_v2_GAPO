@@ -39,7 +39,7 @@ def get_agent_args():
 def get_A2C_args():
     args = get_agent_args()
     # 定义epoch的数目
-    args.epoches = 100
+    args.epoches = 10000
     # 定义episode的数目
     args.episodes = 5
     args.noise_dim=4

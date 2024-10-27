@@ -101,9 +101,12 @@ class Actor(nn.Module):
         schedule_result=torch.tensor(schedule_result,device=prob_vector.device)
         return log_prob, schedule_result
         
-class Critic(nn.Module):
+
+
+
+class Critic_feature(nn.Module):
     def __init__(self, args):
-        super(Critic, self).__init__()
+        super(Critic_feature, self).__init__()
         self.args = args
         self.device = 'cuda' if self.args.cuda else 'cpu'
         self.embedding_dim = self.args.embedding_dim
@@ -114,9 +117,35 @@ class Critic(nn.Module):
         input_dim = self.embedding_dim + 1 #input_dim = 3
         self.fc_net = []
         for layer in range(self.fc_layer_number):
-            self.fc_net.append(nn.Linear(input_dim, self.hidden_dim[layer]))
+            self.fc_net.append(nn.Linear(input_dim, self.hidden_dim[layer]).to(self.device))
             input_dim = self.hidden_dim[layer]
-        self.fc_net=nn.Sequential(*self.fc_net)
+
+    def forward(self, channel_matrix, reward_array):
+        #print("channel_matrix: ", channel_matrix.shape)    #channel_matrix:  torch.Size([250, 20, 16])
+        channel_matrix = channel_matrix.to(self.device)
+        reward_array = reward_array.to(self.device)
+        input_data = 1e6 * channel_matrix
+
+        embedding_data = self.embedding_layer(input_data)
+        #print("embedding_data: ",embedding_data.shape)         #input_data:  torch.Size([250, 20, 16])
+
+        #print("reward_array: ", reward_array.shape)         #reward_array:  torch.Size([250, 20, 1])
+        fc_data = torch.cat((embedding_data, reward_array), 2)
+        #print("fc_data: ",fc_data.shape)                        #fc_data:  torch.Size([250, 20, 3])
+
+        for layer in range(self.fc_layer_number):
+            fc_data = self.fc_net[layer](fc_data)
+
+
+        return fc_data
+
+class Critic(nn.Module):
+    def __init__(self, args):
+        super(Critic, self).__init__()
+        self.args = args
+        self.device = 'cuda' if self.args.cuda else 'cpu'
+        self.hidden_dim = self.args.hidden_dim
+        input_dim = self.hidden_dim[3]
         self.linear_Q = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
         self.linear_K = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
         self.linear_V = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
@@ -124,30 +153,37 @@ class Critic(nn.Module):
         self.flatten = nn.Flatten()
         self.ouput_layer = nn.Linear(input_dim*self.args.user_antennas * self.args.user_numbers, 1)
 
-    def forward(self, channel_matrix, reward_array, f_feature):
-        input_data = 1e6 * channel_matrix
-        ("input_data: ",input_data.shape)           #input_data:  torch.Size([250, 20, 16])
-        embedding_data = self.embedding_layer(input_data)
-        fc_data = torch.cat((embedding_data, reward_array), 2)
-        for layer in range(self.fc_layer_number):
-            fc_data = self.fc_net[layer](fc_data)
-        Q = self.linear_Q(fc_data)
+    def forward(self, c_feature, f_feature):
+
+        Q = self.linear_Q(c_feature)
+        #print("Q: ",Q.shape)
         W = self.linear_K(f_feature)
+        #print("W: ",W.shape)
         V = self.linear_V(f_feature)
+        #print("V: ",V.shape)
         att_weights = torch.bmm(Q, W.transpose(1,2))
+        #print("att_weights: ", att_weights.shape)
         att_weights = att_weights / math.sqrt(self.hidden_dim[1])
+        #print("att_weights: ", att_weights.shape)
         att_weights = self.softmax(att_weights)
+        #print("att_weights: ", att_weights.shape)
         att_output = torch.bmm(att_weights, V)
+        #print("att_output: ", att_output.shape)
+        #fc_data:  torch.Size([250, 20, 32])
         flatten_vector = self.flatten(att_output)
+        #print("flatten_vector: ",flatten_vector.shape)          #flatten_vector:  torch.Size([250, 640])
         value = self.ouput_layer(flatten_vector)
+        #print("value: ",value.shape)                            #value:  torch.Size([250, 1])
 
-        return value, fc_data
+        return value
 
 
-class Critic_2(nn.Module):
-    
+
+
+class Critic_2_feature(nn.Module):
+
     def __init__(self, args):
-        super(Critic_2, self).__init__()
+        super(Critic_2_feature, self).__init__()
         self.args = args
         self.device = 'cuda' if self.args.cuda else 'cpu'
         self.embedding_dim = self.args.embedding_dim
@@ -158,19 +194,54 @@ class Critic_2(nn.Module):
         input_dim = self.embedding_dim + 1
         self.fc_net = []
         for layer in range(self.fc_layer_number):
-            self.fc_net.append(nn.Linear(input_dim, self.hidden_dim[layer]))
+            self.fc_net.append(nn.Linear(input_dim, self.hidden_dim[layer]).to(self.device))
             input_dim = self.hidden_dim[layer]
-        self.fc_net=nn.Sequential(*self.fc_net)
-        self.flatten = nn.Flatten()
-        self.ouput_layer = nn.Linear(input_dim*self.args.user_antennas * self.args.user_numbers, 1)
 
     def forward(self, channel_matrix, reward_array):
+        channel_matrix = channel_matrix.to(self.device)
+        reward_array = reward_array.to(self.device)
         input_data = 1e6 * channel_matrix
         embedding_data = self.embedding_layer(input_data)
         fc_data = torch.cat((embedding_data, reward_array), 2)
         for layer in range(self.fc_layer_number):
             fc_data = self.fc_net[layer](fc_data)
-        flatten_vector = self.flatten(fc_data)
-        value = self.ouput_layer(flatten_vector)
-        return value,fc_data
+        return fc_data
 
+
+class Critic_2(nn.Module):
+
+    def __init__(self, args):
+        super(Critic_2, self).__init__()
+        self.args = args
+        self.device = 'cuda' if self.args.cuda else 'cpu'
+        self.hidden_dim = self.args.hidden_dim
+        input_dim = self.hidden_dim[3]
+        self.linear_Q = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
+        self.linear_K = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
+        self.linear_V = nn.Linear(self.hidden_dim[3], self.hidden_dim[0])
+        self.softmax = nn.Softmax(dim=1)
+        self.flatten = nn.Flatten()
+        self.ouput_layer = nn.Linear(input_dim * self.args.user_antennas * self.args.user_numbers, 1)
+
+    def forward(self, f_feature, c_feature):
+        Q = self.linear_Q(f_feature)
+        # print("Q: ",Q.shape)
+        W = self.linear_K(c_feature)
+        # print("W: ",W.shape)
+        V = self.linear_V(c_feature)
+        # print("V: ",V.shape)
+        att_weights = torch.bmm(Q, W.transpose(1, 2))
+        # print("att_weights: ", att_weights.shape)
+        att_weights = att_weights / math.sqrt(self.hidden_dim[1])
+        # print("att_weights: ", att_weights.shape)
+        att_weights = self.softmax(att_weights)
+        # print("att_weights: ", att_weights.shape)
+        att_output = torch.bmm(att_weights, V)
+        # print("att_output: ", att_output.shape)
+        # fc_data:  torch.Size([250, 20, 32])
+        flatten_vector = self.flatten(att_output)
+        # print("flatten_vector: ",flatten_vector.shape)          #flatten_vector:  torch.Size([250, 640])
+        value = self.ouput_layer(flatten_vector)
+        # print("value: ",value.shape)                            #value:  torch.Size([250, 1])
+
+        return value

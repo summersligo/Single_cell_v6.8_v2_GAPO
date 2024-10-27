@@ -316,7 +316,7 @@ class Project:
             print(episode_capacity_reward)
             
 test = Project()
-#test.Simulation()
-test.testUnseen()
+test.Simulation()
+#test.testUnseen()
 # test.test_specify_model()
 # test.test_model()
