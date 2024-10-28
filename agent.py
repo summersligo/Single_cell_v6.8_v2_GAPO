@@ -171,7 +171,7 @@ class Agent:
             perturbation_enabled = True
         else:
             perturbation_enabled = False
-        perturbation_factor = 0.3  # 梯度扰动因子
+        perturbation_factor = 0.15  # 梯度扰动因子
 
         # 当两个目标的advantage差距过大时，进行梯度扰动
         if perturbation_enabled:
